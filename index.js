@@ -7,26 +7,50 @@ app.use(bodyParser.json());
 
 const startWhatsApp = async () => {
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
+
   const sock = makeWASocket({
     auth: state,
-    printQRInTerminal: true,
+    browser: ["Educare API", "Chrome", "1.0"],
+    // REMOVIDO: printQRInTerminal (não funciona mais)
   });
 
+  // Atualização de credenciais
   sock.ev.on("creds.update", saveCreds);
 
-  // Receber mensagens e enviar para o n8n
+  // NOVO BLOCO: QR, eventos de conexão, reconexão
+  sock.ev.on("connection.update", (update) => {
+    const { qr, connection, lastDisconnect } = update;
+
+    if (qr) {
+      console.log("QR_CODE_STRING:");
+      console.log(qr);  // Você vai transformar esse texto em QR visual
+    }
+
+    if (connection === "open") {
+      console.log("WhatsApp conectado com sucesso!");
+    }
+
+    if (connection === "close") {
+      console.log("Conexão fechada:", lastDisconnect?.error);
+    }
+  });
+
+  // Receber mensagens e enviar ao n8n
   sock.ev.on("messages.upsert", async ({ messages }) => {
     const msg = messages[0];
     if (!msg.key.fromMe) {
       console.log("Mensagem recebida de:", msg.key.remoteJid);
 
-      // Aqui você chama o webhook do n8n
-      // exemplo:
-      // await fetch("https://SEU_N8N/webhook/titnauta", {...})
+      // Exemplo de POST para o n8n
+      // await fetch("https://SEU_N8N/webhook/titnauta", {
+      //   method: "POST",
+      //   headers: { "Content-Type": "application/json" },
+      //   body: JSON.stringify(msg),
+      // });
     }
   });
 
-  // Endpoint para o n8n enviar mensagens
+  // Endpoint para enviar mensagens
   app.post("/sendText", async (req, res) => {
     try {
       const { numero, mensagem } = req.body;
