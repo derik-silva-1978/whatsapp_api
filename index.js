@@ -6,10 +6,12 @@ import qrcode from "qrcode-terminal";
 const app = express();
 app.use(bodyParser.json());
 
+let sock; // Variável global para armazenar o socket
+
 const startWhatsApp = async () => {
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
 
-  const sock = makeWASocket({
+  sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
     browser: ["Educare API", "Chrome", "1.0"],
@@ -60,21 +62,25 @@ const startWhatsApp = async () => {
       }
     }
   });
-
-  // Endpoint para enviar mensagens
-  app.post("/sendText", async (req, res) => {
-    try {
-      const { numero, mensagem } = req.body;
-      await sock.sendMessage(`${numero}@s.whatsapp.net`, { text: mensagem });
-      return res.json({ status: "OK" });
-    } catch (err) {
-      console.error(err);
-      return res.status(500).json({ error: "Erro ao enviar mensagem" });
-    }
-  });
-
-  const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => console.log(`API WhatsApp rodando na porta ${PORT}`));
 };
 
-startWhatsApp();
+// Endpoint para enviar mensagens
+app.post("/sendText", async (req, res) => {
+  try {
+    if (!sock) {
+      return res.status(503).json({ error: "WhatsApp ainda não inicializado" });
+    }
+    const { numero, mensagem } = req.body;
+    await sock.sendMessage(`${numero}@s.whatsapp.net`, { text: mensagem });
+    return res.json({ status: "OK" });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Erro ao enviar mensagem" });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`API WhatsApp rodando na porta ${PORT}`);
+  startWhatsApp(); // Inicia o WhatsApp após o servidor subir
+});
