@@ -1,7 +1,7 @@
 import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } from "@whiskeysockets/baileys";
 import express from "express";
 import bodyParser from "body-parser";
-import qrcode from "qrcode-terminal";
+import QRCode from "qrcode";
 import pino from "pino";
 import { readdir, rm } from "fs/promises";
 import { existsSync } from "fs";
@@ -14,14 +14,17 @@ app.use(bodyParser.json());
 // Rota de Health Check (para verificar se o servidor está online)
 app.get("/", (req, res) => {
   const status = sock ? "conectado" : "aguardando conexão";
+  const qrStatus = qrCodeDataURL ? "disponível em /qr" : "não disponível";
   res.json({ 
     status: "online", 
     whatsapp: status,
+    qrCode: qrStatus,
     timestamp: new Date().toISOString()
   });
 });
 
 let sock; // Variável global para armazenar o socket
+let qrCodeDataURL = null; // Armazena QR Code como Base64 para exibição via web
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 3;
 const BASE_RECONNECT_DELAY = 10000; // 10 segundos
@@ -90,13 +93,21 @@ const startWhatsApp = async () => {
       const { qr, connection, lastDisconnect } = update;
 
       if (qr) {
-        console.log("\n📱 QR Code gerado:");
-        qrcode.generate(qr, { small: true });
-        console.log("\nEscaneie o QR Code acima com o WhatsApp\n");
+        console.log("\n📱 Gerando QR Code...");
+        QRCode.toDataURL(qr, (err, url) => {
+          if (err) {
+            console.error("❌ Erro ao gerar QR Code:", err);
+          } else {
+            qrCodeDataURL = url;
+            console.log("✅ QR Code disponível em: /qr");
+            console.log("🌐 Acesse a URL do seu serviço Railway + /qr para escanear");
+          }
+        });
       }
 
       if (connection === "open") {
         console.log("✅ WhatsApp conectado com sucesso!");
+        qrCodeDataURL = null; // Limpa QR Code após conexão
         reconnectAttempts = 0; // Reset contador de tentativas
       }
 
@@ -218,6 +229,132 @@ app.post("/sendText", async (req, res) => {
       error: "Erro ao enviar mensagem",
       details: err.message
     });
+  }
+});
+
+// Endpoint para exibir QR Code escaneável
+app.get("/qr", (req, res) => {
+  if (qrCodeDataURL) {
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>WhatsApp QR Code</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          body {
+            margin: 0;
+            padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+          }
+          .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            text-align: center;
+            max-width: 500px;
+          }
+          h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 24px;
+          }
+          p {
+            color: #666;
+            margin-bottom: 30px;
+          }
+          img {
+            width: 300px;
+            height: 300px;
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+          }
+          .refresh-btn {
+            margin-top: 20px;
+            padding: 12px 24px;
+            background: #25D366;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            transition: background 0.3s;
+          }
+          .refresh-btn:hover {
+            background: #1fb855;
+          }
+          .instructions {
+            margin-top: 20px;
+            font-size: 14px;
+            color: #999;
+            line-height: 1.6;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>🚀 WhatsApp API</h1>
+          <p>Escaneie o QR Code abaixo com seu WhatsApp</p>
+          <img src="${qrCodeDataURL}" alt="QR Code" />
+          <div class="instructions">
+            <p><strong>Como conectar:</strong></p>
+            <p>1. Abra o WhatsApp no seu celular</p>
+            <p>2. Toque em Aparelhos conectados</p>
+            <p>3. Toque em Conectar um aparelho</p>
+            <p>4. Aponte a câmera para este QR Code</p>
+          </div>
+          <button class="refresh-btn" onclick="location.reload()">🔄 Atualizar</button>
+        </div>
+      </body>
+      </html>
+    `);
+  } else {
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>WhatsApp QR Code</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta http-equiv="refresh" content="5">
+        <style>
+          body {
+            margin: 0;
+            padding: 20px;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            text-align: center;
+          }
+          h1 { color: #333; }
+          p { color: #666; line-height: 1.6; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>✅ WhatsApp Conectado</h1>
+          <p>O QR Code não está mais disponível pois a conexão já foi estabelecida.</p>
+          <p style="font-size: 14px; color: #999;">Esta página atualiza automaticamente a cada 5 segundos.</p>
+        </div>
+      </body>
+      </html>
+    `);
   }
 });
 
