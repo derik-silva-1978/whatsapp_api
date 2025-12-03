@@ -1,6 +1,7 @@
-import makeWASocket, { useMultiFileAuthState } from "@whiskeysockets/baileys";
+import makeWASocket, { useMultiFileAuthState, DisconnectReason } from "@whiskeysockets/baileys";
 import express from "express";
 import bodyParser from "body-parser";
+import qrcode from "qrcode-terminal";
 
 const app = express();
 app.use(bodyParser.json());
@@ -10,20 +11,19 @@ const startWhatsApp = async () => {
 
   const sock = makeWASocket({
     auth: state,
+    printQRInTerminal: false,
     browser: ["Educare API", "Chrome", "1.0"],
-    // REMOVIDO: printQRInTerminal (não funciona mais)
   });
 
   // Atualização de credenciais
   sock.ev.on("creds.update", saveCreds);
 
-  // NOVO BLOCO: QR, eventos de conexão, reconexão
+  // Monitorar conexão
   sock.ev.on("connection.update", (update) => {
     const { qr, connection, lastDisconnect } = update;
 
     if (qr) {
-      console.log("QR_CODE_STRING:");
-      console.log(qr);  // Você vai transformar esse texto em QR visual
+      qrcode.generate(qr, { small: true });
     }
 
     if (connection === "open") {
@@ -31,22 +31,33 @@ const startWhatsApp = async () => {
     }
 
     if (connection === "close") {
-      console.log("Conexão fechada:", lastDisconnect?.error);
+      const shouldReconnect = (lastDisconnect.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log("Conexão fechada devido a", lastDisconnect.error, ", reconectando", shouldReconnect);
+      if (shouldReconnect) {
+        startWhatsApp();
+      }
     }
   });
 
-  // Receber mensagens e enviar ao n8n
+  // Receber mensagens e enviar para o n8n
   sock.ev.on("messages.upsert", async ({ messages }) => {
     const msg = messages[0];
     if (!msg.key.fromMe) {
       console.log("Mensagem recebida de:", msg.key.remoteJid);
 
-      // Exemplo de POST para o n8n
-      // await fetch("https://SEU_N8N/webhook/titnauta", {
-      //   method: "POST",
-      //   headers: { "Content-Type": "application/json" },
-      //   body: JSON.stringify(msg),
-      // });
+      // Enviar para o n8n
+      const webhookUrl = process.env.N8N_WEBHOOK_URL;
+      if (webhookUrl) {
+        try {
+          await fetch(webhookUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(msg),
+          });
+        } catch (error) {
+          console.error("Erro ao enviar para n8n:", error);
+        }
+      }
     }
   });
 
