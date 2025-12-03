@@ -21,6 +21,20 @@ N8N_WEBHOOK_URL=https://seu-n8n.com/webhook/titnauta
 
 Sem o volume, você precisará escanear o QR Code a cada restart.
 
+## Solução para Erro 405
+
+Se o erro 405 persistir após o deploy:
+
+1. Acesse os logs do Railway e copie o QR Code
+2. Escaneie rapidamente com seu WhatsApp (tem timeout de ~60s)
+3. Se falhar 3 vezes, o sistema automaticamente limpa a sessão corrompida
+4. Você também pode forçar reset via: `POST /reset`
+
+**Importante**: O erro 405 geralmente ocorre quando:
+- A sessão está corrompida
+- O QR Code expirou antes de ser escaneado
+- Múltiplas tentativas de conexão simultâneas
+
 ## Deploy
 
 O Railway detecta automaticamente o `package.json` e executa:

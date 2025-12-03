@@ -1,7 +1,12 @@
-import makeWASocket, { useMultiFileAuthState, DisconnectReason } from "@whiskeysockets/baileys";
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore } from "@whiskeysockets/baileys";
 import express from "express";
 import bodyParser from "body-parser";
 import qrcode from "qrcode-terminal";
+import pino from "pino";
+import { readdir, rm } from "fs/promises";
+import { existsSync } from "fs";
+
+const logger = pino({ level: "silent" }); // Silenciar logs internos do Baileys
 
 const app = express();
 app.use(bodyParser.json());
@@ -18,18 +23,63 @@ app.get("/", (req, res) => {
 
 let sock; // Variável global para armazenar o socket
 let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 5;
-const RECONNECT_DELAY = 5000; // 5 segundos
+const MAX_RECONNECT_ATTEMPTS = 3;
+const BASE_RECONNECT_DELAY = 10000; // 10 segundos
+let isConnecting = false;
+let sessionCorrupted = false;
+
+// Função para calcular delay com backoff exponencial
+const getReconnectDelay = (attempt) => {
+  return Math.min(BASE_RECONNECT_DELAY * Math.pow(2, attempt), 60000); // Max 60s
+};
+
+// Função para limpar sessão corrompida
+const clearCorruptedSession = async () => {
+  try {
+    if (existsSync("./auth_info")) {
+      console.log("🗑️ Limpando sessão corrompida...");
+      const files = await readdir("./auth_info");
+      for (const file of files) {
+        await rm(`./auth_info/${file}`, { force: true });
+      }
+      console.log("✅ Sessão limpa com sucesso");
+      sessionCorrupted = false;
+    }
+  } catch (error) {
+    console.error("❌ Erro ao limpar sessão:", error.message);
+  }
+};
 
 const startWhatsApp = async () => {
+  if (isConnecting) {
+    console.log("⏳ Conexão já em andamento, aguarde...");
+    return;
+  }
+
   try {
-    console.log("Inicializando WhatsApp...");
+    isConnecting = true;
+    console.log("🔄 Inicializando WhatsApp...");
+    
+    // Buscar versão mais recente do Baileys
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    console.log(`📦 Usando versão WA: ${version.join(".")}, isLatest: ${isLatest}`);
+
     const { state, saveCreds } = await useMultiFileAuthState("auth_info");
 
     sock = makeWASocket({
-      auth: state,
+      version,
+      logger,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, logger),
+      },
       printQRInTerminal: false,
-      defaultQueryTimeoutMs: undefined,
+      browser: ["Ubuntu", "Chrome", "20.0.04"], // User agent mais genérico e real
+      markOnlineOnConnect: false,
+      generateHighQualityLinkPreview: true,
+      syncFullHistory: false,
+      defaultQueryTimeoutMs: 60000,
+      keepAliveIntervalMs: 30000,
     });
 
     // Atualização de credenciais
@@ -51,23 +101,37 @@ const startWhatsApp = async () => {
       }
 
       if (connection === "close") {
+        isConnecting = false;
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
         
         console.log("❌ Conexão fechada:", {
           statusCode,
+          reason: Object.keys(DisconnectReason).find(key => DisconnectReason[key] === statusCode) || "Unknown",
           error: lastDisconnect?.error?.message || "Unknown",
           shouldReconnect,
           attempt: reconnectAttempts + 1
         });
 
+        // Erro 405 geralmente indica problema de autenticação
+        if (statusCode === 405) {
+          sessionCorrupted = true;
+          console.log("⚠️ Erro 405 detectado - Sessão pode estar corrompida");
+          if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            console.log("🗑️ Limpando sessão para forçar novo QR Code...");
+            await clearCorruptedSession();
+            reconnectAttempts = 0; // Reset após limpar
+          }
+        }
+
         if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+          const delay = getReconnectDelay(reconnectAttempts);
           reconnectAttempts++;
-          console.log(`⏳ Aguardando ${RECONNECT_DELAY/1000}s antes de reconectar...`);
-          await new Promise(resolve => setTimeout(resolve, RECONNECT_DELAY));
-          startWhatsApp();
+          console.log(`⏳ Aguardando ${delay/1000}s antes de reconectar (tentativa ${reconnectAttempts})...`);
+          setTimeout(() => startWhatsApp(), delay);
         } else if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-          console.error("🚫 Máximo de tentativas de reconexão atingido. Verifique os logs.");
+          console.error("🚫 Máximo de tentativas atingido. Use /reset para forçar nova autenticação.");
+          reconnectAttempts = 0; // Reset para permitir tentativa manual
         }
       }
     });
@@ -101,12 +165,21 @@ const startWhatsApp = async () => {
 
     console.log("✅ WhatsApp inicializado com sucesso");
   } catch (error) {
-    console.error("❌ Erro ao inicializar WhatsApp:", error);
+    isConnecting = false;
+    console.error("❌ Erro ao inicializar WhatsApp:", error.message);
+    
+    // Se erro persistir, pode ser sessão corrompida
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS - 1) {
+      console.log("⚠️ Múltiplas falhas detectadas, limpando sessão...");
+      await clearCorruptedSession();
+      reconnectAttempts = 0;
+    }
+    
     if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      const delay = getReconnectDelay(reconnectAttempts);
       reconnectAttempts++;
-      console.log(`⏳ Tentando novamente em ${RECONNECT_DELAY/1000}s...`);
-      await new Promise(resolve => setTimeout(resolve, RECONNECT_DELAY));
-      startWhatsApp();
+      console.log(`⏳ Tentando novamente em ${delay/1000}s...`);
+      setTimeout(() => startWhatsApp(), delay);
     }
   }
 };
@@ -151,6 +224,34 @@ app.post("/sendText", async (req, res) => {
 // Aviso para quem tentar acessar /sendText via GET (navegador)
 app.get("/sendText", (req, res) => {
   res.status(405).json({ error: "Método não permitido. Use POST para enviar mensagens." });
+});
+
+// Endpoint para forçar reset da sessão (útil quando erro 405 persistir)
+app.post("/reset", async (req, res) => {
+  try {
+    console.log("🔄 Forçando reset da sessão...");
+    
+    if (sock) {
+      sock.end(undefined);
+      sock = null;
+    }
+    
+    await clearCorruptedSession();
+    reconnectAttempts = 0;
+    
+    // Aguardar um pouco antes de reconectar
+    setTimeout(() => startWhatsApp(), 2000);
+    
+    res.json({ 
+      status: "OK",
+      message: "Sessão resetada. Aguarde o novo QR Code nos logs."
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      error: "Erro ao resetar sessão",
+      details: error.message
+    });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
