@@ -6,6 +6,11 @@ import qrcode from "qrcode-terminal";
 const app = express();
 app.use(bodyParser.json());
 
+// Rota de Health Check (para verificar se o servidor está online)
+app.get("/", (req, res) => {
+  res.send("API WhatsApp está online! 🚀");
+});
+
 let sock; // Variável global para armazenar o socket
 
 const startWhatsApp = async () => {
@@ -77,6 +82,11 @@ app.post("/sendText", async (req, res) => {
     console.error(err);
     return res.status(500).json({ error: "Erro ao enviar mensagem" });
   }
+});
+
+// Aviso para quem tentar acessar /sendText via GET (navegador)
+app.get("/sendText", (req, res) => {
+  res.status(405).json({ error: "Método não permitido. Use POST para enviar mensagens." });
 });
 
 const PORT = process.env.PORT || 3000;
