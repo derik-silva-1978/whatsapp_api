@@ -289,6 +289,9 @@ app.get("/health", (req, res) => {
 
 // Endpoint para enviar mensagens
 app.post("/sendText", async (req, res) => {
+  console.log(`📨 POST /sendText recebido de ${req.ip}`);
+  console.log(`📋 Body:`, JSON.stringify(req.body, null, 2));
+  
   try {
     if (!sock) {
       return res.status(503).json({ 
